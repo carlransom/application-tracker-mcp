@@ -1,1 +1,19 @@
-{"customHandler":{"description":{"defaultExecutablePath":"node","defaultWorkerPath":"src/index.js"},"enableForwardingHttpRequest":true},"extensions":{"http":{"routePrefix":""}},"version":"2.0"}
+{
+  "version": "2.0",
+  "customHandler": {
+    "description": {
+      "defaultExecutablePath": "node",
+      "defaultWorkerPath": "src/index.js"
+    },
+    "enableForwardingHttpRequest": true
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": ""
+    }
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.*, 5.0.0)"
+  }
+}
