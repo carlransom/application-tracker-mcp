@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import admin from "firebase-admin";
 import { STATUSES } from "./config.js";
 
-// Firestore access. Reads are ALWAYS scoped to one user's subcollection:
+// Firestore access. Reads AND writes are ALWAYS scoped to one user's
+// subcollection:
 //   users/{uid}/applications
 // The uid comes from the verified OAuth access token only — callers never
-// supply it. There are no write methods in this module at all.
+// supply it. There are no bulk operations, and no method accepts a uid
+// from the caller: the uid is a parameter only because the MCP handler
+// passes the token-derived uid in.
 
 let adminApp = null;
 
@@ -62,6 +66,29 @@ function clampLimit(limit, fallback, max) {
   return Math.min(n, max);
 }
 
+// Defaults applied to a new application. Input is validated with zod in
+// mcpServer.js before it reaches here; this is defense-in-depth only.
+function withDefaults(fields) {
+  const out = {
+    company: "",
+    role: "",
+    location: "",
+    type: "",
+    status: "saved",
+    applied: "",
+    closing: "",
+    pay: "",
+    req: "",
+    url: "",
+    notes: "",
+  };
+  for (const f of FIELDS) {
+    if (typeof fields[f] === "string") out[f] = fields[f];
+  }
+  if (!STATUSES.includes(out.status)) out.status = "saved";
+  return out;
+}
+
 export function createFirestoreStore() {
   const db = () => getAdmin().firestore();
   const appsCol = (uid) =>
@@ -114,6 +141,44 @@ export function createFirestoreStore() {
         offers: byStatus.offer,
         interviews: byStatus.interview,
       };
+    },
+
+    // Creates one application in the user's own subcollection. Returns the
+    // created application (with its generated id). The service account
+    // needs Firestore write permission for this to succeed.
+    async addApplication(uid, fields) {
+      const ref = appsCol(uid).doc();
+      const data = withDefaults(fields);
+      await ref.set(data);
+      return { id: ref.id, ...data };
+    },
+
+    // Updates only the fields in `patch`. Returns the updated application,
+    // or null when no application with that id exists under this uid —
+    // updating a nonexistent id is an error, never a create.
+    async updateApplication(uid, id, patch) {
+      const ref = appsCol(uid).doc(String(id));
+      const snap = await ref.get();
+      if (!snap.exists) return null;
+      const clean = {};
+      for (const f of FIELDS) {
+        if (patch[f] !== undefined) clean[f] = patch[f];
+      }
+      if (clean.status && !STATUSES.includes(clean.status)) {
+        throw new Error(`Unknown status: ${clean.status}`);
+      }
+      await ref.update(clean);
+      return normalize(await ref.get());
+    },
+
+    // Deletes one application. Returns true when something was deleted,
+    // false when no application with that id exists under this uid.
+    async deleteApplication(uid, id) {
+      const ref = appsCol(uid).doc(String(id));
+      const snap = await ref.get();
+      if (!snap.exists) return false;
+      await ref.delete();
+      return true;
     },
   };
 }
@@ -171,6 +236,38 @@ export function createMemoryStore(seed = {}) {
         offers: byStatus.offer,
         interviews: byStatus.interview,
       };
+    },
+
+    async addApplication(uid, fields) {
+      const apps = data.get(uid) || [];
+      const created = { id: randomUUID(), ...withDefaults(fields) };
+      apps.push(created);
+      data.set(uid, apps);
+      return { ...created };
+    },
+
+    async updateApplication(uid, id, patch) {
+      const apps = data.get(uid) || [];
+      const idx = apps.findIndex((a) => a.id === String(id));
+      if (idx === -1) return null;
+      const clean = {};
+      for (const f of FIELDS) {
+        if (patch[f] !== undefined) clean[f] = patch[f];
+      }
+      if (clean.status && !STATUSES.includes(clean.status)) {
+        throw new Error(`Unknown status: ${clean.status}`);
+      }
+      Object.assign(apps[idx], clean);
+      if (!STATUSES.includes(apps[idx].status)) apps[idx].status = "saved";
+      return { ...apps[idx] };
+    },
+
+    async deleteApplication(uid, id) {
+      const apps = data.get(uid) || [];
+      const idx = apps.findIndex((a) => a.id === String(id));
+      if (idx === -1) return false;
+      apps.splice(idx, 1);
+      return true;
     },
   };
 }

@@ -94,7 +94,7 @@ export function createApp({ provider, store, config }) {
   app.delete("/mcp", mcpAuth, handleMcp);
 
   app.get("/health", (_req, res) =>
-    res.json({ ok: true, service: "application-tracker-mcp", version: "1.0.0" }),
+    res.json({ ok: true, service: "application-tracker-mcp", version: "1.1.0" }),
   );
 
   app.get("/", (_req, res) => {
@@ -103,11 +103,11 @@ export function createApp({ provider, store, config }) {
 <style>body{font-family:system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;color:#17251f}code{background:#f0ede4;padding:2px 6px;border-radius:6px}</style>
 </head><body>
 <h1>Application Tracker MCP server</h1>
-<p>Read-only MCP access to <a href="https://applicationtracker.app">applicationtracker.app</a>.</p>
+<p>MCP access to <a href="https://applicationtracker.app">applicationtracker.app</a>.</p>
 <p>Connect it in <b>Claude</b> (Settings &rarr; Connectors &rarr; Add custom connector) or <b>ChatGPT</b> (Developer Mode &rarr; custom MCP server) with this URL:</p>
 <p><code>${mcpResourceUrl}</code></p>
-<p>Sign in with Google when asked. The assistant can only read your applications — it cannot change them — and you only ever see your own.</p>
-<p>Tools: <code>list_applications</code>, <code>get_application</code>, <code>search_applications</code>, <code>get_stats</code>.</p>
+<p>Sign in with Google when asked. The assistant can read, add, update, and delete your own applications — and only yours. It can never see or touch another user's data.</p>
+<p>Tools: <code>list_applications</code>, <code>get_application</code>, <code>search_applications</code>, <code>get_stats</code>, <code>add_application</code>, <code>update_application</code>, <code>delete_application</code>.</p>
 </body></html>`);
   });
 
