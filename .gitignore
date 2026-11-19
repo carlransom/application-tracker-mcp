@@ -1,0 +1,6 @@
+node_modules/
+.env
+local.settings.json
+OAUTH_JWT_SECRET.txt
+*.log
+.DS_Store

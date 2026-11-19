@@ -1,0 +1,7 @@
+.git
+.github
+test
+.env
+local.settings.json
+OAUTH_JWT_SECRET.txt
+*.md
