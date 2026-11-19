@@ -1,27 +1,28 @@
-name: Deploy MCP server to Azure Functions
+name: Deploy MCP server to Azure App Service
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - run: npm ci
-      - name: Azure login
-        uses: azure/login@v2
+
+      - uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Create deployment zip
-        run: zip -r deploy.zip . -x '.git/*' '.github/*' 'test/*' '*.md' '.env' 'local.settings.json' 'OAUTH_JWT_SECRET.txt'
-      - name: Deploy to Azure Functions
-        run: az functionapp deployment source config-zip -g application-tracker-rg -n application-tracker-mcp --src deploy.zip
+        run: zip -r deploy.zip . -x ".git/*" "node_modules/*" ".env" "local.settings.json" "OAUTH_JWT_SECRET.txt" "deploy.zip"
+
+      - name: Deploy to Azure Web App
+        run: az webapp deployment source config-zip --resource-group application-tracker-rg --name application-tracker-mcp-web --src deploy.zip
