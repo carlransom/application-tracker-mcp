@@ -17,9 +17,14 @@ import { createApp } from "../src/app.js";
 //  - Unauthenticated /mcp -> 401
 //  - Full OAuth 2.1 + PKCE flow (register -> authorize -> complete -> token)
 //  - PKCE mismatch and authorization-code reuse are rejected
-//  - MCP initialize + tools/list returns exactly the 4 read-only tools
+//  - MCP initialize + tools/list returns exactly the 7 tools (4 read + 3 write)
 //  - list/get/search/stats return the calling user's data only
 //  - A token for user A cannot read user B's applications (get by id)
+//  - Write cycle add -> get -> update -> delete, with validation failures
+//    (bad status, missing required fields, unknown fields) rejected
+//  - Cross-user write isolation both ways: a token for user A cannot update
+//    or delete user B's applications (not found, data untouched), and
+//    vice versa
 //  - Refresh-token grant issues a working access token
 //  - A refresh token or tampered token is rejected as a Bearer token
 
@@ -78,6 +83,18 @@ async function mcpClient(base, accessToken) {
   const client = new Client({ name: "local-test", version: "1.0.0" });
   await client.connect(transport);
   return client;
+}
+
+// True when a tool call is rejected: either the server answers with a
+// JSON-RPC error (thrown by the client SDK, e.g. zod input validation) or
+// a tool result flagged isError.
+async function expectToolError(client, name, args) {
+  try {
+    const res = await client.callTool({ name, arguments: args });
+    return res.isError === true;
+  } catch {
+    return true;
+  }
 }
 
 // Runs the authorize -> complete -> token flow for one test user and returns
@@ -302,19 +319,34 @@ async function main() {
     const tools = await clientA.listTools();
     const names = tools.tools.map((t) => t.name).sort();
     check(
-      "tools/list returns exactly the 4 read-only tools",
+      "tools/list returns exactly the 7 tools (4 read + 3 write)",
       JSON.stringify(names) ===
         JSON.stringify([
+          "add_application",
+          "delete_application",
           "get_application",
           "get_stats",
           "list_applications",
           "search_applications",
+          "update_application",
         ]),
       names.join(", "),
     );
     check(
-      "no write tools exist",
-      !names.some((n) => /add|update|delete|remove|create|set|write/i.test(n)),
+      "write tools are annotated non-read-only, delete is destructive",
+      (() => {
+        const byName = Object.fromEntries(
+          tools.tools.map((t) => [t.name, t.annotations || {}]),
+        );
+        return (
+          byName.add_application?.readOnlyHint === false &&
+          byName.update_application?.readOnlyHint === false &&
+          byName.delete_application?.readOnlyHint === false &&
+          byName.delete_application?.destructiveHint === true &&
+          byName.add_application?.destructiveHint === false &&
+          byName.list_applications?.readOnlyHint === true
+        );
+      })(),
     );
 
     const list = await clientA.callTool({
@@ -495,6 +527,267 @@ async function main() {
       crossB.isError === true,
     );
     await clientB.close();
+
+    // --- Write tools: add -> get -> update -> delete, user A ---
+    const clientW = await mcpClient(base, flowA.access_token);
+
+    const addedMin = await clientW.callTool({
+      name: "add_application",
+      arguments: { company: "Wayne Enterprises", role: "Fleet Supervisor" },
+    });
+    const minApp = addedMin.structuredContent.application;
+    check(
+      "add_application with only company+role returns the created app with defaults",
+      !!minApp?.id &&
+        minApp.company === "Wayne Enterprises" &&
+        minApp.role === "Fleet Supervisor" &&
+        minApp.status === "saved" &&
+        minApp.location === "" &&
+        minApp.notes === "",
+      JSON.stringify(minApp),
+    );
+
+    const addedFull = await clientW.callTool({
+      name: "add_application",
+      arguments: {
+        company: "Stark Industries",
+        role: "Dispatcher",
+        location: "Tampa, FL",
+        type: "Full-time",
+        status: "applied",
+        applied: "2026-11-18",
+        closing: "2026-12-01",
+        pay: "$25/hr",
+        req: "R9",
+        url: "https://example.com/stark",
+        notes: "Referred by a friend",
+      },
+    });
+    const fullApp = addedFull.structuredContent.application;
+    check(
+      "add_application with all fields stores them all",
+      fullApp?.company === "Stark Industries" &&
+        fullApp.status === "applied" &&
+        fullApp.pay === "$25/hr" &&
+        fullApp.req === "R9" &&
+        fullApp.url === "https://example.com/stark" &&
+        fullApp.notes === "Referred by a friend",
+    );
+
+    const afterAdd = await clientW.callTool({
+      name: "list_applications",
+      arguments: {},
+    });
+    check(
+      "list grows after adds (3 seeded + 2 new = 5)",
+      afterAdd.structuredContent.count === 5,
+      `count=${afterAdd.structuredContent.count}`,
+    );
+
+    const updated = await clientW.callTool({
+      name: "update_application",
+      arguments: { id: fullApp.id, pay: "$27/hr", status: "interview" },
+    });
+    const updApp = updated.structuredContent.application;
+    check(
+      "update_application changes only the provided fields",
+      updApp?.pay === "$27/hr" &&
+        updApp?.status === "interview" &&
+        updApp?.company === "Stark Industries" &&
+        updApp?.location === "Tampa, FL" &&
+        updApp?.notes === "Referred by a friend",
+      JSON.stringify(updApp),
+    );
+
+    const getUpdated = await clientW.callTool({
+      name: "get_application",
+      arguments: { id: fullApp.id },
+    });
+    check(
+      "get_application returns the updated application",
+      getUpdated.structuredContent.application?.pay === "$27/hr" &&
+        getUpdated.structuredContent.application?.status === "interview",
+    );
+
+    // --- Write input validation ---
+    check(
+      "add_application with a bad status is rejected",
+      await expectToolError(clientW, "add_application", {
+        company: "Bad Co",
+        role: "Role",
+        status: "hired",
+      }),
+    );
+    check(
+      "add_application without role is rejected",
+      await expectToolError(clientW, "add_application", {
+        company: "No Role Co",
+      }),
+    );
+    check(
+      "add_application without company is rejected",
+      await expectToolError(clientW, "add_application", {
+        role: "No Company Role",
+      }),
+    );
+    check(
+      "add_application with an unknown field is rejected",
+      await expectToolError(clientW, "add_application", {
+        company: "Sneaky Co",
+        role: "Role",
+        uid: "test-user-b",
+      }),
+    );
+    check(
+      "add_application with a client-supplied id is rejected",
+      await expectToolError(clientW, "add_application", {
+        id: "forged-id",
+        company: "Sneaky Co",
+        role: "Role",
+      }),
+    );
+    check(
+      "update_application with a bad status is rejected",
+      await expectToolError(clientW, "update_application", {
+        id: fullApp.id,
+        status: "hired",
+      }),
+    );
+    check(
+      "update_application with an unknown field is rejected",
+      await expectToolError(clientW, "update_application", {
+        id: fullApp.id,
+        salary: "$999",
+      }),
+    );
+
+    const noFields = await clientW.callTool({
+      name: "update_application",
+      arguments: { id: fullApp.id },
+    });
+    check(
+      "update_application with no fields to change is an error",
+      noFields.isError === true,
+    );
+
+    const updateMissing = await clientW.callTool({
+      name: "update_application",
+      arguments: { id: "does-not-exist", pay: "$1" },
+    });
+    check(
+      "update_application on a nonexistent id is an error, not a create",
+      updateMissing.isError === true,
+    );
+    const afterFailedUpdate = await clientW.callTool({
+      name: "list_applications",
+      arguments: {},
+    });
+    check(
+      "failed update did not create anything (still 5)",
+      afterFailedUpdate.structuredContent.count === 5,
+      `count=${afterFailedUpdate.structuredContent.count}`,
+    );
+
+    // --- Cross-user write isolation, both directions ---
+    const crossUpdate = await clientW.callTool({
+      name: "update_application",
+      arguments: { id: "b1", pay: "$0/hr" },
+    });
+    check(
+      "user A CANNOT update user B's application (not found)",
+      crossUpdate.isError === true,
+    );
+    const crossDelete = await clientW.callTool({
+      name: "delete_application",
+      arguments: { id: "b2" },
+    });
+    check(
+      "user A CANNOT delete user B's application (not found)",
+      crossDelete.isError === true,
+    );
+
+    const clientB2 = await mcpClient(base, flowB.access_token);
+    const b1After = await clientB2.callTool({
+      name: "get_application",
+      arguments: { id: "b1" },
+    });
+    const b2After = await clientB2.callTool({
+      name: "get_application",
+      arguments: { id: "b2" },
+    });
+    check(
+      "user B's applications are untouched by user A's attempts",
+      b1After.structuredContent.application?.company === "Globex Corp" &&
+        b2After.structuredContent.application?.company === "Initech" &&
+        b2After.structuredContent.application?.status === "offer",
+    );
+    const crossUpdateB = await clientB2.callTool({
+      name: "update_application",
+      arguments: { id: fullApp.id, pay: "$0/hr" },
+    });
+    check(
+      "user B CANNOT update user A's application (not found)",
+      crossUpdateB.isError === true,
+    );
+    const crossDeleteB = await clientB2.callTool({
+      name: "delete_application",
+      arguments: { id: "a1" },
+    });
+    check(
+      "user B CANNOT delete user A's application (not found)",
+      crossDeleteB.isError === true,
+    );
+    const a1After = await clientW.callTool({
+      name: "get_application",
+      arguments: { id: "a1" },
+    });
+    check(
+      "user A's application is untouched by user B's attempts",
+      a1After.structuredContent.application?.company === "Acme Logistics",
+    );
+    await clientB2.close();
+
+    // --- Delete cycle closes out the adds ---
+    const deletedMin = await clientW.callTool({
+      name: "delete_application",
+      arguments: { id: minApp.id },
+    });
+    check(
+      "delete_application removes the application",
+      deletedMin.structuredContent.deleted === true &&
+        deletedMin.structuredContent.id === minApp.id,
+    );
+    const getDeleted = await clientW.callTool({
+      name: "get_application",
+      arguments: { id: minApp.id },
+    });
+    check("get after delete is an error", getDeleted.isError === true);
+    const deletedFull = await clientW.callTool({
+      name: "delete_application",
+      arguments: { id: fullApp.id },
+    });
+    check(
+      "delete_application removes the second added application",
+      deletedFull.structuredContent.deleted === true,
+    );
+    const deleteMissing = await clientW.callTool({
+      name: "delete_application",
+      arguments: { id: "does-not-exist" },
+    });
+    check(
+      "delete_application on a nonexistent id is an error",
+      deleteMissing.isError === true,
+    );
+    const afterDelete = await clientW.callTool({
+      name: "list_applications",
+      arguments: {},
+    });
+    check(
+      "list is back to the 3 seeded applications after the full cycle",
+      afterDelete.structuredContent.count === 3,
+      `count=${afterDelete.structuredContent.count}`,
+    );
+    await clientW.close();
 
     // --- Bad ID token is rejected at /oauth/complete ---
     const badComplete = await fetch(`${base}/oauth/complete`, {
