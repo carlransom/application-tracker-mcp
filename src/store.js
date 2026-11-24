@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { STATUSES } from "./config.js";
 
 // Firestore access. Reads AND writes are ALWAYS scoped to one user's
@@ -90,7 +91,7 @@ function withDefaults(fields) {
 }
 
 export function createFirestoreStore() {
-  const db = () => getAdmin().firestore();
+  const db = () => getFirestore(getAdmin());
   const appsCol = (uid) =>
     db().collection("users").doc(uid).collection("applications");
 

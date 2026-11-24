@@ -1,4 +1,5 @@
 import { config, REQUIRED_ENV } from "./config.js";
+import { getAuth } from "firebase-admin/auth";
 import { TrackerOAuthProvider } from "./authProvider.js";
 import { createFirestoreStore, getAdmin } from "./store.js";
 import { createApp } from "./app.js";
@@ -29,7 +30,7 @@ const provider = new TrackerOAuthProvider({
   baseUrl: config.publicBaseUrl,
   mcpUrl: `${config.publicBaseUrl}/mcp`,
   verifyIdToken: async (idToken) => {
-    const decoded = await getAdmin().auth().verifyIdToken(idToken);
+    const decoded = await getAuth(getAdmin()).verifyIdToken(idToken);
     return { uid: decoded.uid };
   },
   firebaseWeb: {
