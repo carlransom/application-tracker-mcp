@@ -20,7 +20,7 @@ export function getAdmin() {
   }
   const serviceAccount = JSON.parse(raw);
   adminApp = admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.cert(serviceAccount),
     projectId:
       serviceAccount.project_id ||
       process.env.FIREBASE_PROJECT_ID ||
